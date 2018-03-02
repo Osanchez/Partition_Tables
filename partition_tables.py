@@ -21,10 +21,10 @@ Byte Range      Description                     Essential
 12-15           Size in Sectors                 Yes
 """
 
-
 import struct
 import uuid
 
+import binascii
 
 DOS_PARTITIONS = {
     0x00: "Empty",
@@ -59,38 +59,82 @@ DOS_PARTITIONS = {
     0xab: "Mac OSX Boot",
     0xb7: "BSDI",
     0xb8: "BSDI swap",
-    # FIXME: I'm pretty sure 0xdb is a recovery partition
     0xdb: "Recovery Partition",
     0xde: "Dell Diagnostic Partition",
     0xee: "EFI GPT Disk",
     0xef: "EFI System Partition",
     0xfb: "Vmware File System",
     0xfc: "Vmware swap",
-    # FIXME Add flag for VirtualBox Partitions
 }
 
 
 def parse_mbr(mbr_bytes):
-    data = mbr_bytes
-    bootable_flag = struct.unpack("<B", data[0:1])[0]
-    print(bootable_flag)
-    start_chs_address = struct.unpack("<BH", data[1:4])[0]
-    print(start_chs_address)
-    partition_type = struct.unpack("<B", data[4:5])[0]
-    print(partition_type)
-    end_chs_address = struct.unpack("<BH", data[5:8])[0]
-    print(end_chs_address)
-    return data
+    parsed_data = []
+    start_byte = 446
+    data = mbr_bytes[start_byte:]
+    number_sectors = 4
+
+    for x in range(number_sectors):
+        partition_entries = {}
+        sector = data
+
+        partition_type = struct.unpack('<B', sector[4:5])[0]
+        partition_entries["type"] = hex(partition_type)
+
+        lba_first = struct.unpack("<I", sector[8:12])[0]
+        partition_entries["start"] = lba_first
+
+        number_partitions = struct.unpack("<I", sector[12:16])[0]
+        partition_entries["end"] = lba_first + number_partitions - 1
+
+        partition_number = x
+        partition_entries["number"] = partition_number
+
+        if partition_type != 0:
+            parsed_data.append(partition_entries)
+
+        start_byte += 16
+        data = mbr_bytes[start_byte:]
+
+    return parsed_data
 
 
 def parse_gpt(gpt_file, sector_size=512):
-    return []
+
+    gpt_entries = []
+    gpt_file.seek(sector_size)
+    gpt_header = gpt_file.read(sector_size)
+
+    table_start = struct.unpack('<Q', gpt_header[72:80])[0]
+    number_entries = struct.unpack('<I', gpt_header[80:84])[0]
+    entry_size = struct.unpack('<I', gpt_header[84:88])[0]
+
+    gpt_file.seek(table_start * sector_size)
+    partitions = gpt_file.read(number_entries * entry_size)
+
+    for x in range(number_entries):
+        entry = {}
+        entry_offset = x * entry_size
+        uuid_type = uuid.UUID(bytes_le=partitions[entry_offset:entry_offset + 16])
+
+        if uuid_type != uuid.UUID(int=0):
+            entry['start'] = struct.unpack('<Q', partitions[entry_offset + 32:entry_offset + 40])[0]
+            entry['end'] = struct.unpack('<Q', partitions[entry_offset + 40:entry_offset + 48])[0]
+            entry['number'] = x
+            entry['name'] = partitions[entry_offset + 56:entry_offset + 128].decode('utf-16-le').split('\x00')[0]
+            entry['type'] = uuid_type
+            gpt_entries.append(entry)
+
+    return gpt_entries
 
 
 def main():
     with open("usb-mbr.dd", 'rb') as f:
         read_bytes = f.read()
-    parse_mbr(read_bytes)
+    print(parse_mbr(read_bytes))
+
+    with open("disk-image.dd", 'rb') as f:
+        print(parse_gpt(f, 512))
 
 if __name__ == "__main__":
     main()
